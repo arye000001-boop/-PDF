@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- גשר אוצריא מינימלי: רק מה שצופה PDF+OCR צריך (OCR ישיר, קבצים, צימוד).
+       בלי ASP.NET, בלי נעילה/שירות/הגדרות מערכת, בלי חבילות NuGet. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <AssemblyName>OtzariaBridge</AssemblyName>
+    <RootNamespace>OtzariaBridge</RootNamespace>
+    <Version>3.9.1</Version>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <DebugType>none</DebugType>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <NoWarn>$(NoWarn);CA1416;CS8632;CS1998</NoWarn>
+  </PropertyGroup>
+
+</Project>
