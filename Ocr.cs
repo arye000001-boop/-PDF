@@ -16,7 +16,7 @@ public static class OneOcrApi
     private static readonly string[] Files = { "onnxruntime.dll", "oneocr.dll", "oneocr.onemodel" };
     private const string ModelKey = "kj)TGtrK>f]b[Piow.gU+nC@s\"\"\"\"\"\"4";
     private const int MinSide = 50, MaxSide = 10000, MaxLines = 1000;
-    private static readonly TimeSpan IdleUnload = TimeSpan.FromSeconds(20);   // אחרי כך משחררים את המודל מהזיכרון (הטעינה הבאה תיקח כשנייה-שתיים)
+    private static readonly TimeSpan IdleUnload = TimeSpan.FromMinutes(2);   // אחרי כך משחררים את המודל מהזיכרון (הטעינה הבאה תיקח כשנייה-שתיים)
 
     private static readonly SemaphoreSlim Gate = new(1, 1);
     private static IntPtr _lib;

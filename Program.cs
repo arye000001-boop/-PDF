@@ -326,6 +326,9 @@ public static class Server
                 await FsApi.Search(res, body, () => streaming = true);
                 return;
             }
+            if (path.Equals("/fs/read", StringComparison.OrdinalIgnoreCase) &&
+                await FsApi.ReadStreaming(res, body, () => streaming = true))
+                return;
             if (!Routes.TryGetValue(path, out var handler))
                 throw BridgeException.NotFound("נקודת קצה לא קיימת: " + path);
 

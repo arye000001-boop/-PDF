@@ -1,3 +1,5 @@
+using System.Buffers;
+using System.Buffers.Text;
 using System.Diagnostics;
 using System.Net;
 using System.Runtime.InteropServices;
@@ -174,6 +176,70 @@ public static class FsApi
         if (!binary && offset == 0 && TextExt.Contains(ext))
             return new { name = fi.Name, size = fi.Length, mime, encoding = "utf8", content = DecodeText(buf), truncated, offset };
         return new { name = fi.Name, size = fi.Length, mime, encoding = "base64", content = Convert.ToBase64String(buf), truncated, offset };
+    }
+
+    private const int Slice = 786432;   // 768KB — מכפלה של 3, כדי שקידוד base64 של כל פרוסה (חוץ מהאחרונה) לא ירפד
+
+    /// <summary>/fs/read בזרימה לקבצים בינאריים: קריאה → base64 → כתיבה ללקוח בפרוסות של 768KB, בלי ליצור במקביל עותקים של כל החלק בזיכרון
+    /// (במסלול הישן: מערך + מחרוזת base64 + מחרוזת JSON + בייטים, כמה מאות MB לחלק של 24MB). פורמט התשובה זהה לחלוטין.
+    /// מחזיר false אם הבקשה אינה מתאימה (קובץ טקסט — מפוענח במסלול הרגיל); אז לא נכתב כלום.
+    /// onStart נקרא רגע לפני תחילת הכתיבה — מאותו רגע שגיאות לא נשלחות כ-JSON רגיל.</summary>
+    public static async Task<bool> ReadStreaming(HttpListenerResponse res, JsonElement b, Action onStart)
+    {
+        string path = FullPath(b.Req("path"));
+        if (!File.Exists(path)) throw BridgeException.NotFound("הקובץ לא נמצא: " + path);
+        long max = Math.Clamp(b.Long("maxBytes", 5L * 1024 * 1024), 1, 50L * 1024 * 1024);
+        long offset = Math.Max(0, b.Long("offset", 0));
+        bool binary = b.Bool("binary");
+        string ext = Path.GetExtension(path);
+        if (!binary && offset == 0 && TextExt.Contains(ext)) return false;
+
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        long length = fs.Length;
+        long remaining = Math.Max(0, length - offset);
+        bool truncated = remaining > max;
+        int len = (int)Math.Min(remaining, max);
+        if (offset > 0) fs.Seek(Math.Min(offset, length), SeekOrigin.Begin);
+
+        string mime = Mime.TryGetValue(ext, out var m) ? m : "application/octet-stream";
+        byte[] head = Encoding.UTF8.GetBytes("{\"ok\":true,\"data\":{\"name\":" + JsonSerializer.Serialize(Path.GetFileName(path), Server.Json)
+            + ",\"size\":" + length + ",\"mime\":" + JsonSerializer.Serialize(mime, Server.Json) + ",\"encoding\":\"base64\",\"content\":\"");
+        byte[] tail = Encoding.UTF8.GetBytes("\",\"truncated\":" + (truncated ? "true" : "false") + ",\"offset\":" + offset + "}}");
+
+        onStart();
+        res.StatusCode = 200;
+        res.ContentType = "application/json; charset=utf-8";
+        res.ContentLength64 = head.Length + 4L * ((len + 2) / 3) + tail.Length;
+        var os = res.OutputStream;
+        byte[] raw = ArrayPool<byte>.Shared.Rent(Slice), enc = ArrayPool<byte>.Shared.Rent(Slice / 3 * 4);
+        try
+        {
+            await os.WriteAsync(head);
+            int left = len;
+            while (left > 0)
+            {
+                int want = Math.Min(Slice, left), got = 0;
+                while (got < want)
+                {
+                    int n = await fs.ReadAsync(raw.AsMemory(got, want - got));
+                    if (n == 0) break;
+                    got += n;
+                }
+                if (got < want) throw new IOException("הקובץ השתנה באמצע הקריאה");
+                Base64.EncodeToUtf8(raw.AsSpan(0, want), enc, out _, out int written, want == left);
+                await os.WriteAsync(enc.AsMemory(0, written));
+                left -= want;
+            }
+            await os.WriteAsync(tail);
+            res.Close();
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(raw);
+            ArrayPool<byte>.Shared.Return(enc);
+        }
+        return true;
     }
 
     private static string DecodeText(byte[] buf)
