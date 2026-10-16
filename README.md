@@ -12,7 +12,7 @@
 | `/snip/status`, `/snip/dump`, `/snip/ocr` | תצוגת מצב בלבד (ראו "מגבלות") |
 
 ## בנייה
-דרוש .NET 8 SDK. מריצים `build.bat` (נייד מלא, exe יחיד) או `build.bat light` (קטן, דורש .NET 8 Desktop Runtime מותקן).
+דרוש .NET 10 SDK. מריצים `build.bat` (נייד מלא, exe יחיד) או `build.bat light` (קטן, דורש .NET 10 Desktop Runtime מותקן).
 בגיטהאב: ה-workflow מייצר שני קבצים (OtzariaBridge ו-OtzariaBridge-light).
 
 ## נייד

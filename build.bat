@@ -4,7 +4,7 @@ cd /d "%~dp0"
 
 where dotnet >nul 2>nul
 if errorlevel 1 (
-  echo .NET 8 SDK לא נמצא. הורידו מ: https://dotnet.microsoft.com/download/dotnet/8.0
+  echo .NET 10 SDK לא נמצא. הורידו מ: https://dotnet.microsoft.com/download/dotnet/10.0
   pause
   exit /b 1
 )
@@ -20,7 +20,7 @@ goto done
 :light
 if exist obj rmdir /s /q obj
 echo.
-echo === בנייה קלה: exe קטן, דורש .NET 8 Desktop Runtime מותקן במחשב ===
+echo === בנייה קלה: exe קטן, דורש .NET 10 Desktop Runtime מותקן במחשב ===
 dotnet publish OtzariaBridge.csproj -c Release -r win-x64 --self-contained false ^
   -p:PublishSingleFile=true -o dist-light
 
