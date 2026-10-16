@@ -1,4 +1,7 @@
 using System.Net;
+using System.Runtime;
+using System.Runtime.InteropServices;
+using Microsoft.Win32;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Encodings.Web;
@@ -82,6 +85,9 @@ public static class Program
             return;
         }
 
+        AutoStart.Init();
+        Mem.Schedule(2000);
+
         var menu = new ContextMenuStrip { RightToLeft = RightToLeft.Yes };
         var ni = new NotifyIcon
         {
@@ -90,6 +96,10 @@ public static class Program
             Visible = true,
             ContextMenuStrip = menu,
         };
+        var auto = new ToolStripMenuItem("הפעלה אוטומטית עם Windows") { CheckOnClick = true, Checked = AutoStart.IsOn() };
+        auto.Click += (_, _) => AutoStart.Set(auto.Checked);
+        menu.Opening += (_, _) => auto.Checked = AutoStart.IsOn();
+        menu.Items.Add(auto);
         menu.Items.Add("ביטול כל הצימודים", null, (_, _) =>
         {
             if (MessageBox.Show("לבטל את הצימוד של כל התוספים? בפעם הבאה יתבקש אישור מחדש.", "גשר אוצריא",
@@ -111,6 +121,97 @@ public static class Program
 
         Application.Run();
         ni.Dispose();
+    }
+}
+
+/// <summary>
+/// הפעלה אוטומטית עם Windows: ערך אחד ב-HKCU\...\Run (בלי הרשאות מנהל), שמצביע על ה-exe הנוכחי.
+/// בהפעלה הראשונה ההפעלה האוטומטית נדלקת; מאותו רגע הבחירה במגש נשמרת (הסמן data\autostart.init).
+/// אם ה-exe הועבר — הנתיב ברישום מתעדכן בהפעלה הבאה שלו.
+/// </summary>
+public static class AutoStart
+{
+    private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run", ValueName = "OtzariaBridge";
+    private static string Cmd => "\"" + Environment.ProcessPath + "\"";
+
+    public static bool IsOn()
+    {
+        try { using var k = Registry.CurrentUser.OpenSubKey(RunKey); return k?.GetValue(ValueName) is string; }
+        catch { return false; }
+    }
+
+    public static void Set(bool on)
+    {
+        try
+        {
+            using var k = Registry.CurrentUser.CreateSubKey(RunKey);
+            if (on) k.SetValue(ValueName, Cmd); else k.DeleteValue(ValueName, false);
+        }
+        catch (Exception ex) { Cfg.Log("autostart: " + ex.Message); }
+    }
+
+    public static void Init()
+    {
+        try
+        {
+            string marker = Path.Combine(Cfg.Dir, "autostart.init");
+            if (!File.Exists(marker)) { Set(true); File.WriteAllText(marker, "1"); return; }
+            if (IsOn())
+            {
+                using var k = Registry.CurrentUser.OpenSubKey(RunKey);
+                if (!string.Equals(k?.GetValue(ValueName) as string, Cmd, StringComparison.OrdinalIgnoreCase)) Set(true);
+            }
+        }
+        catch (Exception ex) { Cfg.Log("autostart init: " + ex.Message); }
+    }
+}
+
+/// <summary>
+/// שחרור זיכרון: כשאין בקשות פעילות במשך כמה שניות — איסוף זבל מלא עם דחיסה (כולל LOH) והחזרת הזיכרון ל-Windows (Working Set).
+/// הזיכרון המשוחרר חוזר לפי הצורך בבקשה הבאה (עלות: כמה עשרות אלפיות שנייה).
+/// </summary>
+public static class Mem
+{
+    private const int IdleMs = 3000;
+    [DllImport("kernel32.dll")] private static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll")] private static extern bool SetProcessWorkingSetSize(IntPtr h, IntPtr min, IntPtr max);
+
+    private static readonly object L = new();
+    private static System.Threading.Timer _t;
+    private static int _active;
+
+    public static void Begin()
+    {
+        Interlocked.Increment(ref _active);
+        lock (L) _t?.Change(Timeout.Infinite, Timeout.Infinite);
+    }
+
+    public static void End()
+    {
+        if (Interlocked.Decrement(ref _active) <= 0) { Interlocked.Exchange(ref _active, 0); Schedule(IdleMs); }
+    }
+
+    public static void Schedule(int ms = IdleMs)
+    {
+        lock (L)
+        {
+            if (_t == null) _t = new System.Threading.Timer(_ => Trim(), null, ms, Timeout.Infinite);
+            else _t.Change(ms, Timeout.Infinite);
+        }
+    }
+
+    public static void Trim()
+    {
+        if (Volatile.Read(ref _active) > 0) return;
+        try
+        {
+            GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
+            GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, true, true);
+            GC.WaitForPendingFinalizers();
+            GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, true, true);
+            SetProcessWorkingSetSize(GetCurrentProcess(), new IntPtr(-1), new IntPtr(-1));
+        }
+        catch { }
     }
 }
 
@@ -165,6 +266,13 @@ public static class Server
     }
 
     private static async Task Handle(HttpListenerContext ctx)
+    {
+        Mem.Begin();
+        try { await HandleCore(ctx); }
+        finally { Mem.End(); }
+    }
+
+    private static async Task HandleCore(HttpListenerContext ctx)
     {
         var req = ctx.Request;
         var res = ctx.Response;

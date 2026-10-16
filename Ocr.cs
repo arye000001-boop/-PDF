@@ -1,8 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
-using Windows.Graphics.Imaging;
-using Windows.Storage.Streams;
+using System.Drawing.Imaging;
 
 namespace OtzariaBridge;
 
@@ -17,7 +16,7 @@ public static class OneOcrApi
     private static readonly string[] Files = { "onnxruntime.dll", "oneocr.dll", "oneocr.onemodel" };
     private const string ModelKey = "kj)TGtrK>f]b[Piow.gU+nC@s\"\"\"\"\"\"4";
     private const int MinSide = 50, MaxSide = 10000, MaxLines = 1000;
-    private static readonly TimeSpan IdleUnload = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan IdleUnload = TimeSpan.FromSeconds(20);   // אחרי כך משחררים את המודל מהזיכרון (הטעינה הבאה תיקח כשנייה-שתיים)
 
     private static readonly SemaphoreSlim Gate = new(1, 1);
     private static IntPtr _lib;
@@ -88,15 +87,45 @@ public static class OneOcrApi
     // ── איתור והעתקת הקבצים ────────────────────────────────────────────
     private static string DataDir => Path.Combine(Cfg.Dir, "oneocr");
 
-    private static string FindSourceDir()
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetPackagesByPackageFamily(string familyName, ref uint count, IntPtr fullNames, ref uint bufLen, IntPtr buffer);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetPackagePathByFullName(string fullName, ref uint len, StringBuilder path);
+
+    /// <summary>תיקיות ההתקנה של כלי החיתוך למשתמש הנוכחי (Win32 בלבד, בלי WinRT)</summary>
+    private static List<string> PackageRoots()
     {
-        var roots = new List<string>();
+        var list = new List<string>();
         try
         {
-            var pm = new Windows.Management.Deployment.PackageManager();
-            foreach (var p in pm.FindPackagesForUser("", Pfn)) { try { roots.Add(p.InstalledPath); } catch { } }
+            uint count = 0, bufLen = 0;
+            int rc = GetPackagesByPackageFamily(Pfn, ref count, IntPtr.Zero, ref bufLen, IntPtr.Zero);
+            if (rc != 122 /* ERROR_INSUFFICIENT_BUFFER */ || count == 0) return list;
+            IntPtr names = Marshal.AllocHGlobal((int)count * IntPtr.Size), buf = Marshal.AllocHGlobal((int)bufLen * 2);
+            try
+            {
+                rc = GetPackagesByPackageFamily(Pfn, ref count, names, ref bufLen, buf);
+                if (rc != 0) return list;
+                for (int i = 0; i < count; i++)
+                {
+                    string full = Marshal.PtrToStringUni(Marshal.ReadIntPtr(names, i * IntPtr.Size));
+                    if (string.IsNullOrEmpty(full)) continue;
+                    uint len = 0;
+                    GetPackagePathByFullName(full, ref len, null);
+                    if (len == 0) continue;
+                    var sb = new StringBuilder((int)len);
+                    if (GetPackagePathByFullName(full, ref len, sb) == 0) list.Add(sb.ToString());
+                }
+            }
+            finally { Marshal.FreeHGlobal(names); Marshal.FreeHGlobal(buf); }
         }
         catch { /* ננסה סריקה */ }
+        return list;
+    }
+
+    private static string FindSourceDir()
+    {
+        var roots = PackageRoots();
         try
         {
             string wa = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "WindowsApps");
@@ -210,6 +239,7 @@ public static class OneOcrApi
         }
         catch { }
         finally { Gate.Release(); }
+        Mem.Schedule(1000);   // המודל שוחרר — מנקים עכשיו את הזיכרון שנשאר
     }
 
     private static async Task Warm()
@@ -252,26 +282,27 @@ public static class OneOcrApi
         byte[] bytes = DecodeImage(b.Req("image"));
         if (bytes.Length == 0) throw BridgeException.BadRequest("התמונה ריקה");
 
-        using var stream = new InMemoryRandomAccessStream();
-        using (var writer = new DataWriter(stream))
+        // פענוח התמונה ל-BGRA (GDI+, ללא WinRT: בלי סיבוב לפי EXIF ובלי ניהול צבע — כמו במימוש הקודם)
+        byte[] px;
+        int w, h;
+        try
         {
-            writer.WriteBytes(bytes);
-            await writer.StoreAsync();
-            await writer.FlushAsync();
-            writer.DetachStream();
+            using var ms = new MemoryStream(bytes);
+            using var bmp = new Bitmap(ms);
+            w = bmp.Width; h = bmp.Height;
+            if (w > MaxSide || h > MaxSide)
+                throw BridgeException.BadRequest("התמונה גדולה מדי (מקסימום " + MaxSide + " פיקסלים בכל צד)");
+            var data = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+            try
+            {
+                px = new byte[w * h * 4];
+                if (data.Stride == w * 4) Marshal.Copy(data.Scan0, px, 0, px.Length);
+                else for (int y = 0; y < h; y++) Marshal.Copy(IntPtr.Add(data.Scan0, y * data.Stride), px, y * w * 4, w * 4);
+            }
+            finally { bmp.UnlockBits(data); }
         }
-        stream.Seek(0);
-
-        BitmapDecoder decoder;
-        try { decoder = await BitmapDecoder.CreateAsync(stream); }
+        catch (BridgeException) { throw; }
         catch (Exception) { throw BridgeException.BadRequest("פורמט התמונה אינו נתמך"); }
-        int w = (int)decoder.PixelWidth, h = (int)decoder.PixelHeight;
-        if (w > MaxSide || h > MaxSide)
-            throw BridgeException.BadRequest("התמונה גדולה מדי (מקסימום " + MaxSide + " פיקסלים בכל צד)");
-
-        var pd = await decoder.GetPixelDataAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Straight,
-            new BitmapTransform(), ExifOrientationMode.IgnoreExifOrientation, ColorManagementMode.DoNotColorManage);
-        byte[] px = pd.DetachPixelData();
         long decodeMs = sw.ElapsedMilliseconds;
 
         await Gate.WaitAsync();

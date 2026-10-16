@@ -18,6 +18,7 @@ dotnet publish OtzariaBridge.csproj -c Release -r win-x64 --self-contained true 
 goto done
 
 :light
+if exist obj rmdir /s /q obj
 echo.
 echo === בנייה קלה: exe קטן, דורש .NET 8 Desktop Runtime מותקן במחשב ===
 dotnet publish OtzariaBridge.csproj -c Release -r win-x64 --self-contained false ^
