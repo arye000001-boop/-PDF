@@ -7,6 +7,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with: { dotnet-version: 8.0.x }
+      # גרסה מלאה: עצמאית, לא דורשת התקנת .NET
       - run: dotnet publish OtzariaBridge.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o dist
+      # גרסה קלה: קובץ קטן, דורשת .NET 8 Desktop Runtime מותקן במחשב
+      - run: Remove-Item -Recurse -Force obj
+        shell: pwsh
+      - run: dotnet publish OtzariaBridge.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o dist-light
       - uses: actions/upload-artifact@v4
         with: { name: OtzariaBridge, path: dist/OtzariaBridge.exe }
+      - uses: actions/upload-artifact@v4
+        with: { name: OtzariaBridge-light, path: dist-light/OtzariaBridge.exe }
